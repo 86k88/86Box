@@ -288,11 +288,11 @@ static const device_config_t batman_config[] = {
         .file_filter = "",
         .spinner = { 0 },
         .bios = {
-            { .name = "AMBRA DP60 PCI", .internal_name = "ambradp60", .bios_type = BIOS_NORMAL, 
+            { .name = "AMIBIOS 111192 - Revision A08 (Dell Dimension XPS P60)", .internal_name = "dellxp60", .bios_type = BIOS_NORMAL, 
+              .files_no = 1, .local = 0, .size = 131072, .files = { "roms/machines/batman/XP60-A08.ROM", "" } },
+            { .name = "Intel AMIBIOS - Revision 1.00.04.AF1P (AMBRA DP60 PCI)", .internal_name = "ambradp60", .bios_type = BIOS_NORMAL, 
               .files_no = 2, .local = 0, .size = 131072, .files = { "roms/machines/batman/1004AF1P.BIO", "roms/machines/batman/1004AF1P.BI1", "" } },
-            { .name = "Dell Dimension XPS P60", .internal_name = "dellxp60", .bios_type = BIOS_NORMAL, 
-              .files_no = 1, .local = 0, .size = 131072, .files = { "roms/machines/batman/aptiva510_$IMAGES.USF", "" } },
-            { .name = "Intel Premiere/PCI (Batman)", .internal_name = "batman", .bios_type = BIOS_NORMAL, 
+            { .name = "Intel AMIBIOS - Revision 1.00.08.AF1", .internal_name = "batman", .bios_type = BIOS_NORMAL, 
               .files_no = 2, .local = 0, .size = 131072, .files = { "roms/machines/batman/1008AF1_.BIO", "roms/machines/batman/1008AF1_.BI1", "" } },
             { .files_no = 0 }
         },
@@ -330,7 +330,7 @@ machine_at_batman_init(const machine_t *model)
     int is_dell = !strcmp(device_get_config_bios("bios"), "dellxp60");
     fn = device_get_bios_file(machine_get_device(machine), device_get_config_bios("bios"), 0);
     if (is_dell)
-        ret = bios_load_linear(fn, 0x000e0000, 131072, 0);
+        ret = bios_load_linear_inverted(fn, 0x000e0000, 131072, 0);
     else {
         fn2 = device_get_bios_file(machine_get_device(machine), device_get_config_bios("bios"), 1);
         ret = bios_load_linear_combined(fn, fn2, 0x1c000, 128);

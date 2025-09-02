@@ -100,12 +100,12 @@ static const device_config_t plato_config[] = {
         .file_filter = "",
         .spinner = { 0 },
         .bios = {
-            { .name = "AMBRA DP90 PCI", .internal_name = "ambradp90", .bios_type = BIOS_NORMAL, 
+            { .name = "Intel AMIBIOS - Revision 1.00.02.AX1P (AMBRA DP90 PCI)", .internal_name = "ambradp90", .bios_type = BIOS_NORMAL, 
               .files_no = 2, .local = 0, .size = 131072, .files = { "roms/machines/plato/1002AX1P.BIO", "roms/machines/plato/1002AX1P.BI1", "" } },
-            { .name = "Dell Dimension XPS Pxxx", .internal_name = "dellplato", .bios_type = BIOS_NORMAL, 
-              .files_no = 2, .local = 0, .size = 131072, .files = { "roms/machines/plato/1016AX1J.BIO", "roms/machines/plato/1016AX1J.BI1", "" } },
-            { .name = "Intel Premiere/PCI II (Plato)", .internal_name = "plato", .bios_type = BIOS_NORMAL, 
+            { .name = "Intel AMIBIOS - Revision 1.00.16.AX1", .internal_name = "plato", .bios_type = BIOS_NORMAL, 
               .files_no = 2, .local = 0, .size = 131072, .files = { "roms/machines/plato/1016ax1_.bio", "roms/machines/plato/1016ax1_.bi1", "" } },
+            { .name = "Intel AMIBIOS - Revision 1.00.16.AX1J (Dell Dimension XPS P___)", .internal_name = "dellplato", .bios_type = BIOS_NORMAL, 
+              .files_no = 2, .local = 0, .size = 131072, .files = { "roms/machines/plato/1016AX1J.BIO", "roms/machines/plato/1016AX1J.BI1", "" } },
             { .files_no = 0 }
         },
     },
@@ -249,6 +249,7 @@ machine_at_tek932_init(const machine_t *model)
     pci_register_slot(0x0E, PCI_CARD_NORMAL,      3, 4, 1, 2);
     pci_register_slot(0x0D, PCI_CARD_NORMAL,      4, 1, 2, 3);
     pci_register_slot(0x0C, PCI_CARD_NORMAL,      1, 3, 2, 4);
+    machine_force_ps2(1);
     device_add_params(machine_get_kbc_device(machine), (void *) model->kbc_params);
     device_add(&i430nx_device);
     device_add(&sio_zb_device);

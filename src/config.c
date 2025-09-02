@@ -154,6 +154,25 @@ load_global(void)
     }
 }
 
+/* Load scan code mappings. */
+static void
+load_scan_code_mappings(void)
+{
+    ini_section_t cat = ini_find_section(config, "Scan code mappings");
+    char          temp[512];
+
+    for (int c = 0; c < 768; c++) {
+        sprintf(temp, "%03X", c);
+
+        int mapping = ini_section_get_hex12(cat, temp, c);
+
+        if (mapping == c)
+            ini_section_delete_var(cat, temp);
+        else
+            scancode_config_map[c] = mapping;
+    }
+}
+
 /* Load "General" section. */
 static void
 load_general(void)
@@ -285,7 +304,6 @@ load_machine(void)
     ini_section_t migration_cat;
     const char   *p;
     const char   *migrate_from = NULL;
-    const char   *migrate_bios = NULL;
     int           c;
     int           i;
     int           j;
@@ -327,9 +345,9 @@ load_machine(void)
             if (!strcmp(p, machine_migrations[i].old)) {
                 machine      = machine_get_machine_from_internal_name(machine_migrations[i].new);
                 migrate_from = p;
-                if ((migrate_bios = machine_migrations[i].new_bios)) {
+                if (machine_migrations[i].new_bios) {
                     migration_cat = ini_find_or_create_section(config, machine_get_device(machine)->name);
-                    ini_section_set_string(migration_cat, "bios", migrate_bios);
+                    ini_section_set_string(migration_cat, "bios", machine_migrations[i].new_bios);
                 }
                 break;
             }
@@ -344,7 +362,7 @@ load_machine(void)
         machine = machine_count() - 1;
 
     /* Copy NVR files when migrating a machine to a new NVR name. */
-    if (migrate_from && strcmp(migrate_bios ? migrate_bios : migrate_from, machine_get_nvr_name())) {
+    if (migrate_from && strcmp(migrate_from, machine_get_nvr_name())) {
         char old_fn[256];
         c = snprintf(old_fn, sizeof(old_fn), "%s.", migrate_from);
         char new_fn[256];
@@ -866,6 +884,10 @@ load_ports(void)
 
     if (!has_jumpers || (jumpered_internal_ecp_dma == def_jumper))
         ini_section_delete_var(cat, "jumpered_internal_ecp_dma");
+    else if (has_jumpers && !(machine_has_jumpered_ecp_dma(machine, jumpered_internal_ecp_dma))) {
+        jumpered_internal_ecp_dma = def_jumper;
+        ini_section_delete_var(cat, "jumpered_internal_ecp_dma");
+    }
 
     for (int c = 0; c < (SERIAL_MAX - 1); c++) {
         sprintf(temp, "serial%d_enabled", c + 1);
@@ -1444,6 +1466,9 @@ load_floppy_and_cdrom_drives(void)
 
         sprintf(temp, "cdrom_%02i_speed", c + 1);
         cdrom[c].speed = ini_section_get_int(cat, temp, 8);
+
+        sprintf(temp, "cdrom_%02i_no_check", c + 1);
+        cdrom[c].no_check = ini_section_get_int(cat, temp, 0);
 
         sprintf(temp, "cdrom_%02i_type", c + 1);
         p = ini_section_get_string(cat, temp, cdrom[c].bus_type == CDROM_BUS_MKE ? "cr563" : "86cd");
@@ -2091,6 +2116,9 @@ config_load(void)
 #endif
     memset(rdisk_drives, 0, sizeof(rdisk_drive_t));
 
+    for (int i = 0; i < 768; i++)
+        scancode_config_map[i] = i;
+
     config = ini_read(cfg_path);
 
     if (config == NULL) {
@@ -2167,6 +2195,7 @@ config_load(void)
         load_general();                 /* General */
         for (i = 0; i < MONITORS_NUM; i++)
             load_monitor(i);            /* Monitors */
+        load_scan_code_mappings();      /* Scan code mappings */
         load_machine();                 /* Machine */
         load_video();                   /* Video */
         load_input_devices();           /* Input devices */
@@ -2273,6 +2302,25 @@ save_global(void)
     } else {
         ini_section_delete_var(cat, "vmm_path");
     }
+}
+
+/* Save scan code mappings. */
+static void
+save_scan_code_mappings(void)
+{
+    ini_section_t cat = ini_find_section(config, "Scan code mappings");
+    char          temp[512];
+
+    for (int c = 0; c < 768; c++) {
+        sprintf(temp, "%03X", c);
+
+        if (scancode_config_map[c] == c)
+            ini_section_delete_var(cat, temp);
+        else
+            ini_section_set_hex12(cat, temp, scancode_config_map[c]);
+    }
+
+    ini_delete_section_if_empty(config, cat);
 }
 
 /* Save "General" section. */
@@ -2864,7 +2912,10 @@ save_ports(void)
 
     if (!has_jumpers || (jumpered_internal_ecp_dma == def_jumper))
         ini_section_delete_var(cat, "jumpered_internal_ecp_dma");
-    else
+    else if (has_jumpers && !(machine_has_jumpered_ecp_dma(machine, jumpered_internal_ecp_dma))) {
+        jumpered_internal_ecp_dma = def_jumper;
+        ini_section_set_int(cat, "jumpered_internal_ecp_dma", jumpered_internal_ecp_dma);
+    } else
         ini_section_set_int(cat, "jumpered_internal_ecp_dma", jumpered_internal_ecp_dma);
 
     for (int c = 0; c < (SERIAL_MAX - 1); c++) {
@@ -3364,6 +3415,12 @@ save_floppy_and_cdrom_drives(void)
         sprintf(temp, "cdrom_%02i_host_drive", c + 1);
         ini_section_delete_var(cat, temp);
 
+        sprintf(temp, "cdrom_%02i_no_check", c + 1);
+        if (cdrom[c].no_check)
+            ini_section_set_int(cat, temp, cdrom[c].no_check);
+        else
+            ini_section_delete_var(cat, temp);
+
         sprintf(temp, "cdrom_%02i_speed", c + 1);
         if ((cdrom[c].bus_type == 0) || (cdrom[c].speed == 8))
             ini_section_delete_var(cat, temp);
@@ -3571,6 +3628,7 @@ config_save(void)
     save_general();                 /* General */
     for (uint8_t i = 0; i < MONITORS_NUM; i++)
         save_monitor(i);            /* Monitors */
+    save_scan_code_mappings();      /* Scan code mappings */
     save_machine();                 /* Machine */
     save_video();                   /* Video */
     save_input_devices();           /* Input devices */
