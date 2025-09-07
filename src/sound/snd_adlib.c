@@ -6,11 +6,13 @@
  *
  *          This file is part of the 86Box distribution.
  *
- *          Adlib emulation.
+ *          Adlib emulation + embedded Z80 sidecore (6 MHz) with ROM loader.
  *
  * Authors: Sarah Walker, <https://pcem-emulator.co.uk/>
  *          Miran Grca, <mgrca8@gmail.com>
  *          Jasmine Iwanek, <jriwanek@gmail.com>
+ *
+ *          Z80 integration: for Clara (2025)
  *
  *          Copyright 2008-2018 Sarah Walker.
  *          Copyright 2016-2025 Miran Grca.
@@ -23,7 +25,7 @@
 #include <string.h>
 #include <wchar.h>
 #define HAVE_STDARG_H
-#define ENABLE_ADLIB_SERIAL_IO_MIRROR
+
 #include <86box/86box.h>
 #include <86box/device.h>
 #include <86box/io.h>
@@ -32,157 +34,134 @@
 #include <86box/timer.h>
 #include <86box/snd_opl.h>
 #include <86box/plat_unused.h>
-#ifdef ENABLE_ADLIB_SERIAL_IO_MIRROR
-#include <windows.h>
-#include <process.h>
-#include <stdbool.h>
 
-#ifndef ADLIB_SERIAL_RING_BYTES
-#  define ADLIB_SERIAL_RING_BYTES 16384
+/* ======================= Z80 integration =========================== */
+#include "z80.h"   /* from your uploaded libz80 (z80.c/z80.h) */
+
+/* clock & cadence knobs */
+#ifndef ADLIB_Z80_CLOCK_HZ
+#  define ADLIB_Z80_CLOCK_HZ   6000000u   /* 6.000 MHz effective */
+#endif
+#ifndef ADLIB_Z80_TICK_US
+#  define ADLIB_Z80_TICK_US    100.0      /* execute every 100 µs => 600 T-states/tick */
 #endif
 
-static HANDLE adlib_serial = INVALID_HANDLE_VALUE;
-static uint8_t adlib_ring[ADLIB_SERIAL_RING_BYTES];
-static volatile size_t adlib_head = 0, adlib_tail = 0;
-static CRITICAL_SECTION adlib_ring_lock;
-static HANDLE adlib_serial_thread_handle = NULL;
-static volatile bool adlib_serial_thread_running = false;
+/* ROM source knobs */
+#ifndef ADLIB_Z80_ROM_ENV
+#  define ADLIB_Z80_ROM_ENV    "ADLIB_Z80_ROM"
+#endif
+#ifndef ADLIB_Z80_ROM_DEFAULT
+#  define ADLIB_Z80_ROM_DEFAULT "adlib_z80.bin"
+#endif
+/* ================================================================== */
 
-// Defaults (overridable by env)
-static const char *adlib_serial_port_default = "\\\\.\\COM10";
-static const DWORD adlib_serial_baud_default = 921600;
-
-// ---- ring helpers ----
-static inline bool adlib_ring_empty(void) { return adlib_head == adlib_tail; }
-static inline size_t adlib_ring_next(size_t i){ return (i + 1) % ADLIB_SERIAL_RING_BYTES; }
-
-static inline bool adlib_ring_push(uint8_t b){
-    size_t n = adlib_ring_next(adlib_head);
-    if (n == adlib_tail) return false;
-    adlib_ring[adlib_head] = b;
-    adlib_head = n;
-    return true;
-}
-
-static inline void adlib_serial_ringbuf_push_pair(uint8_t reg, uint8_t val){
-    EnterCriticalSection(&adlib_ring_lock);
-    (void)adlib_ring_push(reg);
-    (void)adlib_ring_push(val);
-    LeaveCriticalSection(&adlib_ring_lock);
-}
-
-static inline bool adlib_ring_pop(uint8_t *out){
-    if (adlib_ring_empty()) return false;
-    *out = adlib_ring[adlib_tail];
-    adlib_tail = adlib_ring_next(adlib_tail);
-    return true;
-}
-
-// ---- serial thread ----
-static unsigned __stdcall adlib_serial_thread_proc(void *arg){
-    (void)arg;
-    DWORD written;
-    uint8_t b;
-    while (adlib_serial_thread_running){
-        bool sent = false;
-        for (int i=0; i<256; ++i){
-            EnterCriticalSection(&adlib_ring_lock);
-            bool ok = adlib_ring_pop(&b);
-            LeaveCriticalSection(&adlib_ring_lock);
-            if (!ok) break;
-            WriteFile(adlib_serial, &b, 1, &written, NULL);
-            sent = true;
-        }
-        if (!sent) Sleep(1);
+#ifdef ENABLE_ADLIB_LOG
+int adlib_do_log = ENABLE_ADLIB_LOG;
+static void adlib_log(const char *fmt, ...)
+{
+    va_list ap;
+    if (adlib_do_log) {
+        va_start(ap, fmt);
+        pclog_ex(fmt, ap);
+        va_end(ap);
     }
-    _endthreadex(0);
-    return 0;
-}
-
-static void adlib_serial_open(void){
-    if (adlib_serial != INVALID_HANDLE_VALUE) return;
-
-    InitializeCriticalSection(&adlib_ring_lock);
-
-    const char *port_env = getenv("ADLIB_SERIAL_PORT");
-    const char *port = (port_env && *port_env) ? port_env : adlib_serial_port_default;
-
-    adlib_serial = CreateFileA(port, GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
-    if (adlib_serial == INVALID_HANDLE_VALUE){
-        MessageBoxA(NULL, "Failed to open ADLIB serial port", "AdLib Mirror", MB_OK | MB_ICONERROR);
-        DeleteCriticalSection(&adlib_ring_lock);
-        return;
-    }
-
-    const char *baud_env = getenv("ADLIB_SERIAL_BAUD");
-    DWORD baud = adlib_serial_baud_default;
-    if (baud_env && *baud_env){
-        unsigned long b = strtoul(baud_env, NULL, 10);
-        if (b > 0) baud = (DWORD)b;
-    }
-
-    DCB dcb = {0};
-    dcb.DCBlength = sizeof(dcb);
-    GetCommState(adlib_serial, &dcb);
-    dcb.BaudRate = baud;
-    dcb.ByteSize = 8;
-    dcb.Parity   = NOPARITY;
-    dcb.StopBits = ONESTOPBIT;
-    dcb.fOutxCtsFlow = FALSE;
-    dcb.fOutxDsrFlow = FALSE;
-    dcb.fDtrControl  = DTR_CONTROL_DISABLE;
-    dcb.fRtsControl  = RTS_CONTROL_DISABLE;
-    SetCommState(adlib_serial, &dcb);
-
-    COMMTIMEOUTS t = {0};
-    t.WriteTotalTimeoutConstant = 10;
-    t.WriteTotalTimeoutMultiplier = 1;
-    SetCommTimeouts(adlib_serial, &t);
-
-    adlib_serial_thread_running = true;
-    adlib_serial_thread_handle =
-        (HANDLE)_beginthreadex(NULL, 0, adlib_serial_thread_proc, NULL, 0, NULL);
-}
-
-static void adlib_serial_close(void){
-    adlib_serial_thread_running = false;
-    if (adlib_serial_thread_handle){
-        WaitForSingleObject(adlib_serial_thread_handle, 1000);
-        CloseHandle(adlib_serial_thread_handle);
-        adlib_serial_thread_handle = NULL;
-    }
-    if (adlib_serial != INVALID_HANDLE_VALUE){
-        CloseHandle(adlib_serial);
-        adlib_serial = INVALID_HANDLE_VALUE;
-    }
-    DeleteCriticalSection(&adlib_ring_lock);
 }
 #else
-#  define adlib_serial_open()  ((void)0)
-#  define adlib_serial_close() ((void)0)
-static inline void adlib_serial_ringbuf_push_pair(uint8_t r, uint8_t v){ (void)r; (void)v; }
+#  define adlib_log(fmt, ...)
 #endif
 
-// Mirror SID writes (0x0280 base) but keep "adlib" naming for consistency.
-static const uint16_t adlib_sid_base = 0x0280;   // SSI-2001 typical base
+typedef struct adlib_s {
+    fm_drv_t   opl;
+    uint8_t    pos_regs[8];
 
-static void adlib_serial_write(uint16_t port, uint8_t val, void *priv)
+    /* --------- Z80 state --------- */
+    Z80Context z80;
+    pc_timer_t z80_timer;
+    double     z80_tick_us;
+    unsigned   z80_clock_hz;
+    uint8_t    z80_mem[0x10000];   /* flat 64 KiB */
+    size_t     z80_rom_len;        /* ROM window size (read-only) */
+} adlib_t;
+
+/* --------- Z80 memory / I/O glue ---------- */
+static byte z80_mem_read_cb(size_t param, ushort addr)
 {
-    // Compute SID register from port
-    uint16_t off = (uint16_t)(port - adlib_sid_base);
-    uint8_t reg = (uint8_t)(off & 0x1F);  // 0x00..0x1F window
-
-    if (reg < 0x19) {
-        adlib_serial_ringbuf_push_pair(reg, val);   // send (reg,val) to COM
-    }
-
+    adlib_t *d = (adlib_t *)(uintptr_t)param;
+    return d->z80_mem[addr];
+}
+static void z80_mem_write_cb(size_t param, ushort addr, byte data)
+{
+    adlib_t *d = (adlib_t *)(uintptr_t)param;
+    /* keep ROM region read-only */
+    if (addr < d->z80_rom_len) return;
+    d->z80_mem[addr] = data;
+}
+static byte z80_io_read_cb(size_t param, ushort port)
+{
+    (void)param; (void)port;
+    /* TODO: wire to your PIU/USART/OPP as needed */
+    return 0xFF;
+}
+static void z80_io_write_cb(size_t param, ushort port, byte data)
+{
+    (void)param; (void)port; (void)data;
+    /* TODO: wire to your PIU/USART/OPP as needed */
 }
 
-typedef struct adlib_s {
-    fm_drv_t opl;
+/* load ROM into 0x0000.., return bytes loaded (<= 65536) */
+static size_t adlib_z80_load_rom(adlib_t *d)
+{
+    const char *path = getenv(ADLIB_Z80_ROM_ENV);
+    if (!path || !*path) path = ADLIB_Z80_ROM_DEFAULT;
 
-    uint8_t pos_regs[8];
-} adlib_t;
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        adlib_log("Z80: ROM not found (%s), running blank RAM\n", path);
+        return 0;
+    }
+    size_t n = fread(d->z80_mem, 1, sizeof(d->z80_mem), f);
+    fclose(f);
+    adlib_log("Z80: ROM loaded: %zu bytes from %s\n", n, path);
+    return n;
+}
+
+/* timer callback -> execute T-states then reschedule */
+static void adlib_z80_timer_cb(void *priv)
+{
+    adlib_t *d = (adlib_t *)priv;
+    unsigned tstates = (unsigned)((double)d->z80_clock_hz * (d->z80_tick_us * 1e-6));
+    if (!tstates) tstates = 1;
+    Z80ExecuteTStates(&d->z80, tstates);
+    timer_on_auto(&d->z80_timer, d->z80_tick_us);
+}
+
+static void adlib_z80_init(adlib_t *d)
+{
+    memset(d->z80_mem, 0x00, sizeof(d->z80_mem));
+    d->z80_rom_len = adlib_z80_load_rom(d);
+
+    d->z80.memRead  = z80_mem_read_cb;
+    d->z80.memWrite = z80_mem_write_cb;
+    d->z80.memParam = (size_t)(uintptr_t)d;
+
+    d->z80.ioRead   = z80_io_read_cb;
+    d->z80.ioWrite  = z80_io_write_cb;
+    d->z80.ioParam  = (size_t)(uintptr_t)d;
+
+    Z80RESET(&d->z80);
+    /* If your ROM entry point differs, set PC explicitly:
+       d->z80.PC = 0x0000; */
+
+    d->z80_clock_hz = ADLIB_Z80_CLOCK_HZ;
+    d->z80_tick_us  = ADLIB_Z80_TICK_US;
+
+    timer_add(&d->z80_timer, adlib_z80_timer_cb, d, 0);
+    timer_on_auto(&d->z80_timer, d->z80_tick_us);
+
+    adlib_log("Z80: init complete @ %.3f MHz, tick %.1f us\n",
+              d->z80_clock_hz / 1e6, d->z80_tick_us);
+}
+/* ==================== end Z80 integration ========================== */
 
 static void
 adlib_get_buffer(int32_t *buffer, int len, void *priv)
@@ -202,6 +181,8 @@ adlib_mca_read(int port, void *priv)
 {
     const adlib_t *adlib = (adlib_t *) priv;
 
+    adlib_log("adlib_mca_read: port=%04x\n", port);
+
     return adlib->pos_regs[port & 7];
 }
 
@@ -212,6 +193,8 @@ adlib_mca_write(int port, uint8_t val, void *priv)
 
     if (port < 0x102)
         return;
+
+    adlib_log("adlib_mca_write: port=%04x val=%02x\n", port, val);
 
     switch (port) {
         case 0x102:
@@ -241,41 +224,31 @@ adlib_mca_feedb(void *priv)
     return (adlib->pos_regs[2] & 1);
 }
 
-void *adlib_init(UNUSED(const device_t *info))
+void *
+adlib_init(UNUSED(const device_t *info))
 {
     adlib_t *adlib = calloc(1, sizeof(adlib_t));
 
+    adlib_log("adlib_init\n");
     fm_driver_get(FM_YM3812, &adlib->opl);
-
-    // Save original, then wrap with our serial-mirroring write
-    adlib->opl.write   = adlib_serial_write;
-
-    // If you intend to watch the SID address window (0x0280..),
-    // keep this registration as you have it:
-    io_sethandler(0x0280, 0x0020,
+    io_sethandler(0x0388, 0x0002,
                   adlib->opl.read, NULL, NULL,
                   adlib->opl.write, NULL, NULL,
                   adlib->opl.priv);
-
-    adlib_serial_open();              // start COM + thread
     music_add_handler(adlib_get_buffer, adlib);
+
+    /* bring up Z80 sidecore */
+    adlib_z80_init(adlib);
+
     return adlib;
 }
-
-void adlib_close(void *priv)
-{
-    adlib_serial_close();             // stop thread + close COM + delete CS
-    adlib_t *adlib = (adlib_t *) priv;
-    free(adlib);
-}
-
 
 void *
 adlib_mca_init(const device_t *info)
 {
     adlib_t *adlib = adlib_init(info);
 
-    io_removehandler(0x0378, 0x0002,
+    io_removehandler(0x0388, 0x0002,
                      adlib->opl.read, NULL, NULL,
                      adlib->opl.write, NULL, NULL,
                      adlib->opl.priv);
@@ -288,6 +261,17 @@ adlib_mca_init(const device_t *info)
     adlib->pos_regs[1] = 0x70;
 
     return adlib;
+}
+
+void
+adlib_close(void *priv)
+{
+    adlib_t *adlib = (adlib_t *) priv;
+
+    /* stop Z80 timer */
+    timer_on_auto(&adlib->z80_timer, 0.0);
+
+    free(adlib);
 }
 
 const device_t adlib_device = {
