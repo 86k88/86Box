@@ -133,7 +133,7 @@ extern const device_t cmi8338_onboard_device;
 extern const device_t cmi8738_device;
 extern const device_t cmi8738_onboard_device;
 extern const device_t cmi8738_6ch_onboard_device;
-
+extern const device_t imfc_device;
 /* Covox ISA */
 extern const device_t voicemasterkey_device;
 extern const device_t soundmasterplus_device;
