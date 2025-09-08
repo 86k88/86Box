@@ -12,7 +12,7 @@
  *
  * Author: Clara’s build (2025)
  */
-
+// skeleton written by AI, rest of work done by "me"
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
