@@ -21,6 +21,7 @@ add_library(snd OBJECT
     snd_opl_nuked.c
     snd_opl_ymfm.cpp
     snd_resid.cpp
+    snd_imfc.c
     midi.c
     snd_speaker.c
     snd_pssj.c
@@ -51,6 +52,15 @@ add_library(snd OBJECT
     snd_ym7128.c
     snd_optimc.c
     snd_opl_esfm.c
+)
+target_sources(snd PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/imfc/piu.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/imfc/ppi_v2.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/imfc/opm.c
+	${CMAKE_CURRENT_SOURCE_DIR}/imfc/i8253.c
+)
+target_include_directories(snd PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/imfc
 )
 
 # TODO: Should platform-specific audio driver be here?
