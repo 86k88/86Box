@@ -155,6 +155,10 @@ static const device_config_t cu430hx_config[] = {
               .files_no = 5, .local = 0, .size = 262144, .files = { "roms/machines/cu430hx/1003DK08.BIO", "roms/machines/cu430hx/1003DK08.BI1",
                                                                     "roms/machines/cu430hx/1003DK08.BI2", "roms/machines/cu430hx/1003DK08.BI3",
                                                                     "roms/machines/cu430hx/1003DK08.RCV", "" } },
+            { .name = "Intel AMIBIOS - Revision 1.00.04.DK0K (NEC PowerMate V2xxx/P2xxx)", .internal_name = "powermatev2p2", .bios_type = BIOS_NORMAL, 
+              .files_no = 5, .local = 0, .size = 262144, .files = { "roms/machines/cu430hx/1004DK0K.BIO", "roms/machines/cu430hx/1004DK0K.BI1",
+                                                                    "roms/machines/cu430hx/1004DK0K.BI2", "roms/machines/cu430hx/1004DK0K.BI3",
+                                                                    "roms/machines/cu430hx/1004DK0K.RCV", "" } },
             { .name = "Intel AMIBIOS - Revision 1.00.06.DK0", .internal_name = "cu430hx", .bios_type = BIOS_NORMAL, 
               .files_no = 5, .local = 0, .size = 262144, .files = { "roms/machines/cu430hx/1006DK0_.BIO", "roms/machines/cu430hx/1006DK0_.BI1",
                                                                     "roms/machines/cu430hx/1006DK0_.BI2", "roms/machines/cu430hx/1006DK0_.BI3",
@@ -316,6 +320,9 @@ machine_at_tc430hx_gpio_init(void)
     else if (cpu_busspeed > 60000000)
         gpio |= 0xffff00ff;
 
+    if (sound_card_current[0] == SOUND_INTERNAL)
+        gpio |= 0xffff04ff;
+
     machine_set_gpio_default(gpio);
 }
 
@@ -349,6 +356,9 @@ machine_at_tc430hx_init(const machine_t *model)
 
     if (gfxcard[0] == VID_INTERNAL)
         device_add(machine_get_vid_device(machine));
+
+    if (sound_card_current[0] == SOUND_INTERNAL)
+        machine_snd = device_add(machine_get_snd_device(machine));
 
     device_add(&i430hx_device);
     device_add(&piix3_device);
@@ -451,6 +461,9 @@ machine_at_pcv90_init(const machine_t *model)
     device_add(&piix3_device);
     device_add_params(&pc87306_device, (void *) PCX730X_AMI);
     device_add(&intel_flash_bxt_ami_device);
+
+    if (sound_card_current[0] == SOUND_INTERNAL)
+        machine_snd = device_add(machine_get_snd_device(machine));
 
     return ret;
 }
